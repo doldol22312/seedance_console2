@@ -243,6 +243,7 @@ export default function Studio() {
   const [baseUrl, setBaseUrl] = useState("https://ark.cn-beijing.volces.com/api/v3");
   const [model, setModel] = useState("doubao-seedance-2-5-260628");
   const [busy, setBusy] = useState(false);
+  const [webmBusy, setWebmBusy] = useState(false);
   const [error, setError] = useState("");
   const [hot, setHot] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -489,6 +490,31 @@ export default function Studio() {
     setSettings(next);
     setApiKey("");
     setSettingsOpen(false);
+  }
+
+  async function downloadWebm(job: Job) {
+    setWebmBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/${job.arkId}/webm`);
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `WebM export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${job.arkId}.webm`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not export WebM.");
+    } finally {
+      setWebmBusy(false);
+    }
   }
 
   async function cancelActive() {
@@ -859,6 +885,11 @@ export default function Studio() {
                   <a className="ghost" href={videoSrc(active)} download>
                     Download
                   </a>
+                  {active.localVideo ? (
+                    <button className="ghost" type="button" disabled={webmBusy} onClick={() => downloadWebm(active)}>
+                      {webmBusy ? "Encoding WebM…" : "WebM"}
+                    </button>
+                  ) : null}
                   <button className="ghost" type="button" onClick={() => continueTake("extend")}>
                     Extend this
                   </button>
