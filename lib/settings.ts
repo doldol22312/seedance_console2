@@ -1,5 +1,6 @@
 import fs from "node:fs";
-import { SETTINGS_FILE, ensureDataDirs } from "./paths";
+import path from "node:path";
+import { OUTPUTS_DIR, SETTINGS_FILE, ensureDataDirs } from "./paths";
 import type { Provider, ProviderConfig, PublicProviderConfig, PublicSettings, Settings } from "./types";
 
 export const PROVIDER_DEFAULTS: Record<Provider, ProviderConfig> = {
@@ -17,6 +18,7 @@ export const PROVIDER_DEFAULTS: Record<Provider, ProviderConfig> = {
 
 type SettingsFile = {
   provider?: Provider;
+  outputsDir?: string;
   providers?: Partial<Record<Provider, Partial<ProviderConfig>>>;
 };
 
@@ -97,6 +99,13 @@ export function getProviderConfig(provider: Provider): ProviderConfig {
   return resolveProviderConfig(provider);
 }
 
+// Where finished MP4 archives and WebM exports are written. Defaults to data/outputs.
+export function getOutputsDir(): string {
+  const { file } = readRaw();
+  const raw = (file.outputsDir || "").trim();
+  return raw ? path.resolve(raw) : OUTPUTS_DIR;
+}
+
 function toPublic(config: ProviderConfig): PublicProviderConfig {
   return {
     hasKey: Boolean(config.apiKey),
@@ -115,6 +124,8 @@ export function toPublicSettings(settings: Settings): PublicSettings {
       [settings.provider]: toPublic(settings),
       [other]: toPublic(getProviderConfig(other)),
     } as Record<Provider, PublicProviderConfig>,
+    outputsDir: getOutputsDir(),
+    outputsDirDefault: OUTPUTS_DIR,
   };
 }
 
@@ -123,10 +134,12 @@ export function saveSettings(next: {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  outputsDir?: string;
 }) {
   ensureDataDirs();
   const currentProvider = readProvider();
   const provider = isProvider(next.provider) ? next.provider : currentProvider;
+  const currentFile = readRaw().file;
 
   // Start from what is already on disk for both providers.
   const { legacy, file } = readRaw();
@@ -154,6 +167,12 @@ export function saveSettings(next: {
 
   const payload: SettingsFile & { providers: Record<Provider, ProviderConfig> } = {
     provider,
+    outputsDir:
+      next.outputsDir !== undefined
+        ? next.outputsDir.trim()
+          ? path.resolve(next.outputsDir.trim())
+          : ""
+        : currentFile.outputsDir || "",
     providers: slots,
   };
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(payload, null, 2));

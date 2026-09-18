@@ -426,7 +426,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .url-row {
   display: grid;
-  grid-template-columns: 110px 1fr auto;
+  grid-template-columns: auto 1fr auto;
   gap: 8px;
 }
 
@@ -437,6 +437,7 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 8px 10px;
   outline: none;
   color-scheme: dark;
+  min-width: 0;
 }
 
 .assets {
@@ -491,6 +492,36 @@ input[type="range"]::-webkit-slider-thumb {
   align-items: center;
   gap: 12px;
   padding-top: 8px;
+}
+
+.roll-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+  white-space: nowrap;
+  font-family: var(--font-mono), monospace;
+}
+
+.price b {
+  color: var(--tungsten);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.price small {
+  color: var(--print-faint);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .gate {
@@ -736,6 +767,18 @@ input[type="range"]::-webkit-slider-thumb {
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--print-faint);
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.label-row .ghost {
+  padding: 2px 8px;
+  font-size: 9px;
 }
 
 .sheet input,

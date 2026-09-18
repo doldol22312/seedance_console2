@@ -106,4 +106,6 @@ export type PublicProviderConfig = {
 export type PublicSettings = PublicProviderConfig & {
   provider: Provider;
   providers: Record<Provider, PublicProviderConfig>;
+  outputsDir: string;
+  outputsDirDefault: string;
 };

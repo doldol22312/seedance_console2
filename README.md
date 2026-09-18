@@ -36,8 +36,10 @@ Both providers keep their own key, base URL, and model in `data/settings.json`; 
 
 ## Notes
 
-- Stills can be uploaded and inlined as data URLs. Large video/audio files should be public HTTPS links so the provider can fetch them. Wan 3.0 files and web links must be public URLs.
+- Stills can be uploaded and inlined as data URLs (up to 20 MB — the APIs reject larger request strings). Large video/audio files must be public HTTPS links so the provider can fetch them. Wan 3.0 files and web links must be public URLs.
 - Finished clips are saved under `data/outputs` because both providers' download URLs expire after 24 hours.
+- **Save folder**: Settings → *Save folder* chooses where new MP4 archives and WebM exports are written (any path on your machine; it's created if missing). Leave empty for the built-in `data/outputs`. Takes saved before a folder change keep playing — the app checks both locations.
 - `MOV` is for grading / keying (Seedance only). Use `MP4` if you want the gate player to always open the file.
 - **WebM export**: on a finished take, `WebM` transcodes the archived MP4 with `ffmpeg` (must be on PATH — `winget install Gyan.FFmpeg`). If an NVIDIA GPU with AV1 NVENC is available (RTX 40-series+) it hardware-encodes AV1 at ~10× realtime; otherwise it falls back to CPU VP9 (CRF 23, near-transparent). Audio is Opus 128k. The result is cached in `data/outputs` as `<task>.webm`; the first click encodes, later clicks are instant.
 - Wan 3.0 extras: `Prompt extend` rewrites short prompts before generation; `Auto length` sends duration `-1` so the model picks a duration.
+- **Price tag**: when DashScope is active and the model is `wan3.0-video` or `wan3.0-video-prime`, the `Launch` row quotes the USD cost for the selected resolution and length (Beijing rates; standard = 30% off promo, prime = list). With `Auto length` the model picks 2–30s, so the quote is a range.

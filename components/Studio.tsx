@@ -13,6 +13,7 @@ import type {
   Resolution,
   StudioMode,
 } from "@/lib/types";
+import { estimateWanPrice, formatUsdRange } from "@/lib/pricing";
 
 const MODES: { id: StudioMode; title: string; line: string; hint: string; wanHint: string; heading: string }[] = [
   {
@@ -223,7 +224,6 @@ export default function Studio() {
   const [returnLastFrame, setReturnLastFrame] = useState(true);
   const [webSearch, setWebSearch] = useState(false);
   const [promptExtend, setPromptExtend] = useState(true);
-  const [seed, setSeed] = useState("");
   const [firstFrame, setFirstFrame] = useState<MediaRef>();
   const [lastFrame, setLastFrame] = useState<MediaRef>();
   const [images, setImages] = useState<MediaRef[]>([]);
@@ -242,11 +242,13 @@ export default function Studio() {
   const [sheetProvider, setSheetProvider] = useState<Provider>("ark");
   const [baseUrl, setBaseUrl] = useState("https://ark.cn-beijing.volces.com/api/v3");
   const [model, setModel] = useState("doubao-seedance-2-5-260628");
+  const [outputsDir, setOutputsDir] = useState("");
   const [busy, setBusy] = useState(false);
   const [webmBusy, setWebmBusy] = useState(false);
   const [error, setError] = useState("");
   const [hot, setHot] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const playerRef = useRef<HTMLVideoElement>(null);
 
   const provider: Provider = settings?.provider || "ark";
   const meta = PROVIDERS[provider];
@@ -273,6 +275,22 @@ export default function Studio() {
   const chips = provider === "dashscope" ? WAN_CHIPS[mode] : PROMPT_CHIPS[mode];
   const hint = provider === "dashscope" ? modeMeta.wanHint : modeMeta.hint;
 
+  // Wan 3.0 / Prime price for the current model, length, and resolution.
+  // A locked or automatic length is sent as -1, so the quote is a range.
+  const priceEstimate = useMemo(
+    () =>
+      provider === "dashscope"
+        ? estimateWanPrice({
+            model: settings?.model,
+            resolution,
+            duration: autoDuration || durationLocked ? -1 : duration,
+            minDuration: meta.minDuration,
+            maxDuration: 30,
+          })
+        : undefined,
+    [provider, settings?.model, resolution, duration, autoDuration, durationLocked, meta.minDuration],
+  );
+
   useEffect(() => {
     if (!recording) return;
     const timer = window.setInterval(() => setNow(new Date()), 80);
@@ -294,6 +312,7 @@ export default function Studio() {
         setSheetProvider(data.provider);
         setBaseUrl(data.baseUrl);
         setModel(data.model);
+        setOutputsDir(data.outputsDir === data.outputsDirDefault ? "" : data.outputsDir);
         if (!data.hasKey) setSettingsOpen(true);
       })
       .catch(() => undefined);
@@ -439,7 +458,6 @@ export default function Studio() {
         returnLastFrame: provider === "dashscope" ? false : returnLastFrame,
         webSearch: provider === "dashscope" ? false : webSearch,
         promptExtend,
-        seed: seed.trim() ? Number(seed) : undefined,
         firstFrame,
         lastFrame,
         images,
@@ -480,16 +498,21 @@ export default function Studio() {
 
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
-    const next = await readJson<PublicSettings>(
-      await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: sheetProvider, apiKey, baseUrl, model }),
-      }),
-    );
-    setSettings(next);
-    setApiKey("");
-    setSettingsOpen(false);
+    setError("");
+    try {
+      const next = await readJson<PublicSettings>(
+        await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: sheetProvider, apiKey, baseUrl, model, outputsDir }),
+        }),
+      );
+      setSettings(next);
+      setApiKey("");
+      setSettingsOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save settings.");
+    }
   }
 
   async function downloadWebm(job: Job) {
@@ -521,6 +544,16 @@ export default function Studio() {
     if (!active) return;
     const next = await readJson<Job>(await fetch(`/api/tasks/${active.arkId}`, { method: "DELETE" }));
     setJobs((current) => current.map((item) => (item.id === next.id ? next : item)));
+  }
+
+  // Clicking a take always starts from the top of the reel.
+  function selectTake(job: Job) {
+    if (job.id === active?.id) {
+      const player = playerRef.current;
+      if (player) player.currentTime = 0;
+      return;
+    }
+    setActiveId(job.id);
   }
 
   function continueTake(kind: "extend" | "frames") {
@@ -623,7 +656,7 @@ export default function Studio() {
             />
             <div className="script-meta">
               <span>{prompt.length} marks</span>
-              <span>Ctrl + Enter rolls camera</span>
+              <span>Ctrl + Enter launches</span>
             </div>
             <div className="chips">
               {chips.map((chip) => (
@@ -718,17 +751,6 @@ export default function Studio() {
                 onChange={(event) => setAutoDuration(event.target.checked)}
               />
               <span>Auto length</span>
-            </label>
-            <label className="toggle">
-              <span>Seed</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={seed}
-                onChange={(event) => setSeed(event.target.value.replace(/[^\d]/g, ""))}
-                placeholder="random"
-                style={{ width: 84, background: "transparent", border: 0, outline: "none" }}
-              />
             </label>
           </div>
 
@@ -841,9 +863,26 @@ export default function Studio() {
 
           <div className="roll">
             <span className="eyebrow">{settings?.model || meta.word.toLowerCase()}</span>
-            <button className="primary" type="button" disabled={busy || (needsPrompt && !prompt.trim())} onClick={() => generate()}>
-              {busy ? "Queuing…" : "Roll camera"}
-            </button>
+            <div className="roll-actions">
+              {priceEstimate ? (
+                <span
+                  className="price"
+                  title={`${priceEstimate.label} (${priceEstimate.note}) · ${resolution} · $${priceEstimate.rate}/s${
+                    priceEstimate.adaptive
+                      ? ` · smart length picks ${priceEstimate.seconds.min}–${priceEstimate.seconds.max}s`
+                      : ` · ${priceEstimate.seconds.min}s`
+                  }`}
+                >
+                  <b>{formatUsdRange(priceEstimate)}</b>
+                  <small>
+                    {priceEstimate.adaptive ? `auto · ${resolution}` : `${duration}s · ${resolution}`}
+                  </small>
+                </span>
+              ) : null}
+              <button className="primary" type="button" disabled={busy || (needsPrompt && !prompt.trim())} onClick={() => generate()}>
+                {busy ? "Queuing…" : "Launch"}
+              </button>
+            </div>
           </div>
         </section>
 
@@ -856,7 +895,9 @@ export default function Studio() {
                 </div>
               </div>
             ) : videoSrc(active) ? (
-              <video src={videoSrc(active)} controls autoPlay loop />
+              // No autoPlay/loop: new takes wait on their first frame, and the
+              // key remounts the player so switching takes always rewinds.
+              <video key={active?.id} ref={playerRef} src={videoSrc(active)} controls />
             ) : (
               <div className="gate-empty">
                 <div>
@@ -940,7 +981,7 @@ export default function Studio() {
                 key={job.id}
                 className={`take ${job.id === active?.id ? "active" : ""}`}
                 type="button"
-                onClick={() => setActiveId(job.id)}
+                onClick={() => selectTake(job)}
               >
                 <div className="take-thumb">
                   {videoSrc(job) ? <video src={videoSrc(job)} muted /> : job.status.toUpperCase()}
@@ -953,7 +994,7 @@ export default function Studio() {
               </button>
             ))
           ) : (
-            <p className="hint">No takes yet. Write a scene and roll camera.</p>
+            <p className="hint">No takes yet. Write a scene and hit launch.</p>
           )}
         </div>
       </section>
@@ -986,6 +1027,27 @@ export default function Studio() {
             <label>
               Model
               <input value={model} onChange={(event) => setModel(event.target.value)} />
+            </label>
+            <label>
+              <span className="label-row">
+                Save folder
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => setOutputsDir("")}
+                  title="Use the built-in folder"
+                >
+                  Use built-in
+                </button>
+              </span>
+              <input
+                value={outputsDir}
+                onChange={(event) => setOutputsDir(event.target.value)}
+                placeholder={settings?.outputsDirDefault || "data/outputs"}
+              />
+              <small style={{ letterSpacing: 0, textTransform: "none" }}>
+                New MP4 archives and WebM exports land here. Empty = built-in folder. Existing takes keep playing from where they were saved.
+              </small>
             </label>
             <div className="sheet-actions">
               {settings?.hasKey ? (

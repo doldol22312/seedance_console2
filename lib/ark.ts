@@ -131,7 +131,7 @@ export function buildArkPayload(input: GenerateRequest) {
 
 export async function createTask(input: GenerateRequest) {
   if (!input.prompt.trim()) {
-    throw new ArkError("Write a prompt before rolling camera.", 400);
+    throw new ArkError("Write a prompt before launching.", 400);
   }
   if (input.mode === "frames" && !input.firstFrame) {
     throw new ArkError("First-frame mode needs a still for the opening image.", 400);

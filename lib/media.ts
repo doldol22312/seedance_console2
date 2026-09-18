@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { OUTPUTS_DIR, UPLOADS_DIR, ensureDataDirs } from "./paths";
+import { getOutputsDir } from "./settings";
 import type { MediaKind, MediaRef } from "./types";
 
 const MIME: Record<string, string> = {
@@ -22,7 +23,10 @@ const MIME: Record<string, string> = {
   ".m4a": "audio/mp4",
 };
 
-const MAX_INLINE_BYTES = 42 * 1024 * 1024;
+// Providers cap JSON string values (Jackson's StreamReadConstraints rejects
+// strings over 28,000,000 chars on the server). Base64 inflates by 4/3, so a
+// 20 MB file becomes ~27.96 M characters — the largest safe inline size.
+const MAX_INLINE_BYTES = 20 * 1024 * 1024;
 
 export function mimeFromName(name: string, fallback = "application/octet-stream") {
   return MIME[path.extname(name).toLowerCase()] || fallback;
@@ -49,7 +53,22 @@ export function uploadPath(id: string) {
 
 export function outputPath(name: string) {
   const safe = path.basename(name);
-  return path.join(OUTPUTS_DIR, safe);
+  const dir = getOutputsDir();
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, safe);
+}
+
+// Files may live in the configured save folder or the built-in one (takes made
+// before the folder was changed) — search both.
+export function findOutputFile(name: string): string | null {
+  const safe = path.basename(name);
+  const roots = [getOutputsDir()];
+  if (path.resolve(OUTPUTS_DIR) !== path.resolve(getOutputsDir())) roots.push(OUTPUTS_DIR);
+  for (const root of roots) {
+    const filePath = path.join(root, safe);
+    if (fs.existsSync(filePath)) return filePath;
+  }
+  return null;
 }
 
 export function resolveMediaUrl(ref?: MediaRef): string | undefined {
@@ -64,7 +83,7 @@ export function resolveMediaUrl(ref?: MediaRef): string | undefined {
   const stat = fs.statSync(filePath);
   if (stat.size > MAX_INLINE_BYTES) {
     throw new Error(
-      `${ref.name} is ${(stat.size / 1024 / 1024).toFixed(1)} MB. The provider needs a public HTTPS URL for files this large — paste a CDN or object-storage link instead.`,
+      `${ref.name} is ${(stat.size / 1024 / 1024).toFixed(1)} MB. Inline base64 is capped at 20 MB (the API rejects larger request strings). Paste a public HTTPS URL for this file instead.`,
     );
   }
   const mime = ref.mime || mimeFromName(ref.id);
@@ -184,24 +203,26 @@ export function ensureWebm(basename: string) {
   const run = (async () => {
     ensureDataDirs();
     const stem = path.basename(basename, path.extname(basename));
-    const source = outputPath(`${stem}.mp4`);
-    if (!fs.existsSync(source)) {
+    const source = findOutputFile(`${stem}.mp4`);
+    if (!source) {
       throw new Error("The MP4 archive for this take is missing — re-open the take to fetch it again.");
     }
+    const existing = findOutputFile(`${stem}.webm`);
+    if (existing) {
+      return { target: existing, url: `/api/media/outputs/${stem}.webm`, filename: `${stem}.webm` };
+    }
     const target = outputPath(`${stem}.webm`);
-    if (!fs.existsSync(target)) {
-      const temp = `${target}.part`;
+    const temp = `${target}.part`;
+    try {
+      await encodeWebm(source, temp);
+      fs.renameSync(temp, target);
+    } catch (err) {
       try {
-        await encodeWebm(source, temp);
-        fs.renameSync(temp, target);
-      } catch (err) {
-        try {
-          fs.unlinkSync(temp);
-        } catch {
-          // Temp file may not exist.
-        }
-        throw err;
+        fs.unlinkSync(temp);
+      } catch {
+        // Temp file may not exist.
       }
+      throw err;
     }
     return { target, url: `/api/media/outputs/${stem}.webm`, filename: `${stem}.webm` };
   })();
