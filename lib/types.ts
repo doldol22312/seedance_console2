@@ -22,6 +22,7 @@ export type MediaRef = {
   name: string;
   url?: string;
   mime?: string;
+  duration?: number;
 };
 
 export type GenerateRequest = {

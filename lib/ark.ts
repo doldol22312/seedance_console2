@@ -77,6 +77,17 @@ function lockedDuration(mode: GenerateRequest["mode"]) {
   return mode === "edit";
 }
 
+// Seedance 2.5 only. Pin the omni-reference task type so the model's auto
+// detection cannot re-classify an edit or extension (TaskTypeMismatch).
+// Reference mode stays on the default `auto` because those prompts may be
+// reference, edit, or extend intent.
+function omniTaskType(model: string, mode: GenerateRequest["mode"]) {
+  if (!/seedance[-_. ]?2[-_. ]?5/i.test(model)) return undefined;
+  if (mode === "edit") return "edit";
+  if (mode === "extend") return "extend";
+  return undefined;
+}
+
 export function buildArkPayload(input: GenerateRequest) {
   const settings = getSettings();
   const content: ArkContent[] = [{ type: "text", text: input.prompt.trim() }];
@@ -118,6 +129,9 @@ export function buildArkPayload(input: GenerateRequest) {
 
   payload.ratio = lockedRatio(input.mode) ? "adaptive" : input.ratio;
   payload.duration = lockedDuration(input.mode) ? -1 : input.duration;
+
+  const taskType = omniTaskType(settings.model, input.mode);
+  if (taskType) payload.omni_reference_task_type = taskType;
 
   if (typeof input.seed === "number" && input.seed >= 0) {
     payload.seed = input.seed;

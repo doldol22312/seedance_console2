@@ -13,7 +13,7 @@ import type {
   Resolution,
   StudioMode,
 } from "@/lib/types";
-import { estimateWanPrice, formatUsdRange } from "@/lib/pricing";
+import { estimatePrice, formatPriceRange } from "@/lib/pricing";
 
 const MODES: { id: StudioMode; title: string; line: string; hint: string; wanHint: string; heading: string }[] = [
   {
@@ -170,6 +170,31 @@ function videoSrc(job?: Job | null) {
   return job?.localVideo || job?.videoUrl;
 }
 
+// Read a clip's duration so video-input billing (input + output, 4s floor) can
+// be quoted. Resolves undefined if metadata never loads.
+function probeVideoDuration(src: string, timeoutMs = 12_000): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    let timer = 0;
+    let settled = false;
+    const finish = (duration?: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute("src");
+      resolve(duration);
+    };
+    timer = window.setTimeout(() => finish(undefined), timeoutMs);
+    video.preload = "metadata";
+    video.onloadedmetadata = () =>
+      finish(Number.isFinite(video.duration) && video.duration > 0 ? video.duration : undefined);
+    video.onerror = () => finish(undefined);
+    video.src = src;
+  });
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const data = await response.json();
   if (!response.ok) {
@@ -275,21 +300,51 @@ export default function Studio() {
   const chips = provider === "dashscope" ? WAN_CHIPS[mode] : PROMPT_CHIPS[mode];
   const hint = provider === "dashscope" ? modeMeta.wanHint : modeMeta.hint;
 
-  // Wan 3.0 / Prime price for the current model, length, and resolution.
+  // Seedance / Wan price for the current model, length, and resolution.
   // A locked or automatic length is sent as -1, so the quote is a range.
-  const priceEstimate = useMemo(
-    () =>
-      provider === "dashscope"
-        ? estimateWanPrice({
-            model: settings?.model,
-            resolution,
-            duration: autoDuration || durationLocked ? -1 : duration,
-            minDuration: meta.minDuration,
-            maxDuration: 30,
-          })
-        : undefined,
-    [provider, settings?.model, resolution, duration, autoDuration, durationLocked, meta.minDuration],
-  );
+  const priceEstimate = useMemo(() => {
+    const inputSeconds = videos.length
+      ? Math.max(videos.reduce((sum, item) => sum + (item.duration ?? 0), 0), 1)
+      : 0;
+    return estimatePrice({
+      model: settings?.model,
+      resolution,
+      duration: autoDuration || durationLocked ? -1 : duration,
+      minDuration: meta.minDuration,
+      maxDuration: 30,
+      inputSeconds,
+      baseUrl: settings?.baseUrl,
+      currency: "USD",
+    });
+  }, [
+    settings?.model,
+    settings?.baseUrl,
+    resolution,
+    duration,
+    autoDuration,
+    durationLocked,
+    meta.minDuration,
+    videos,
+  ]);
+
+  const priceTitle = priceEstimate
+    ? [
+        `${priceEstimate.label} · ${priceEstimate.resolution} · ${priceEstimate.note}`,
+        priceEstimate.rate !== undefined ? `$${priceEstimate.rate}/s` : undefined,
+        priceEstimate.ratePerM !== undefined
+          ? `${priceEstimate.currency} ${priceEstimate.ratePerM}/1M tokens`
+          : undefined,
+        priceEstimate.tokens ? `~${priceEstimate.tokens.max.toLocaleString()} tokens` : undefined,
+        priceEstimate.promoApplied && priceEstimate.promoEndsAt
+          ? `promo until ${new Date(priceEstimate.promoEndsAt).toLocaleDateString()}`
+          : undefined,
+        priceEstimate.adaptive
+          ? `auto length ${priceEstimate.seconds.min}–${priceEstimate.seconds.max}s`
+          : `${priceEstimate.seconds.min}s`,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   useEffect(() => {
     if (!recording) return;
@@ -328,6 +383,11 @@ export default function Studio() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
+
+  // Frames mode books first/last stills only, so keep the URL picker on image.
+  useEffect(() => {
+    if (mode === "frames" && urlKind !== "image") setUrlKind("image");
+  }, [mode, urlKind]);
 
   useEffect(() => {
     const ids = pendingKey.split(",").filter(Boolean);
@@ -372,7 +432,7 @@ export default function Studio() {
     const max = maxFor(kind);
     if (mode === "frames") {
       if (kind !== "image") {
-        setError("Frames mode only accepts stills.");
+        setError("Frames mode takes stills only — the opening and closing frames must be images.");
         return;
       }
       if (!firstFrame) setFirstFrame(ref);
@@ -411,6 +471,24 @@ export default function Studio() {
     });
   }
 
+  // Keep clip durations in sync so input billing is exact when possible.
+  function rememberDuration(ref: MediaRef) {
+    const src = ref.id ? `/api/media/uploads/${ref.id}` : ref.url;
+    if (!src) return;
+    probeVideoDuration(src)
+      .then((duration) => {
+        if (!duration) return;
+        setVideos((current) =>
+          current.map((item) =>
+            (ref.id && item.id === ref.id) || (ref.url && item.url === ref.url)
+              ? { ...item, duration }
+              : item,
+          ),
+        );
+      })
+      .catch(() => undefined);
+  }
+
   async function addFiles(fileList: FileList | File[]) {
     setError("");
     for (const file of Array.from(fileList)) {
@@ -430,6 +508,7 @@ export default function Studio() {
         mime: saved.mime,
       };
       appendRef(ref.kind, ref);
+      if (ref.kind === "video") rememberDuration(ref);
     }
   }
 
@@ -440,6 +519,7 @@ export default function Studio() {
     const ref: MediaRef = { kind: urlKind, name: url, url };
     appendRef(urlKind, ref);
     setUrlValue("");
+    if (urlKind === "video") rememberDuration(ref);
   }
 
   async function generate() {
@@ -560,13 +640,14 @@ export default function Studio() {
     if (!active) return;
     if (kind === "extend" && videoSrc(active)) {
       setMode("extend");
-      setVideos([
-        {
-          kind: "video",
-          name: "Previous take",
-          url: active.videoUrl || undefined,
-        },
-      ]);
+      const previous: MediaRef = {
+        kind: "video",
+        name: "Previous take",
+        url: active.videoUrl || undefined,
+        duration: active.params.duration > 0 ? active.params.duration : undefined,
+      };
+      setVideos([previous]);
+      if (previous.duration === undefined) rememberDuration(previous);
       setPrompt(
         provider === "dashscope"
           ? "Extend Video 1 forward. Keep the same lens, pace, and character. "
@@ -770,13 +851,19 @@ export default function Studio() {
                 }}
                 onClick={() => fileRef.current?.click()}
               >
-                Drop stills, clips, or audio into the gate — or click to browse.
+                {mode === "frames"
+                  ? "Drop the opening still, then the closing still — or click to browse."
+                  : "Drop stills, clips, or audio into the gate — or click to browse."}
                 <input
                   ref={fileRef}
                   type="file"
                   hidden
                   multiple
-                  accept="image/*,video/mp4,video/quicktime,audio/mpeg,audio/wav,.mp3,.wav,.mp4,.mov"
+                  accept={
+                    mode === "frames"
+                      ? "image/*"
+                      : "image/*,video/mp4,video/quicktime,audio/mpeg,audio/wav,.mp3,.wav,.mp4,.mov"
+                  }
                   onChange={(event) => {
                     if (event.target.files) addFiles(event.target.files).catch((err) => setError(err.message));
                     event.target.value = "";
@@ -786,12 +873,16 @@ export default function Studio() {
               <form className="url-row" onSubmit={addUrl}>
                 <select value={urlKind} onChange={(event) => setUrlKind(event.target.value as MediaKind)}>
                   <option value="image">Image URL</option>
-                  <option value="video">Video URL</option>
-                  <option value="audio">Audio URL</option>
-                  {provider === "dashscope" ? (
+                  {mode !== "frames" ? (
                     <>
-                      <option value="file">File URL</option>
-                      <option value="link">Web link</option>
+                      <option value="video">Video URL</option>
+                      <option value="audio">Audio URL</option>
+                      {provider === "dashscope" ? (
+                        <>
+                          <option value="file">File URL</option>
+                          <option value="link">Web link</option>
+                        </>
+                      ) : null}
                     </>
                   ) : null}
                 </select>
@@ -865,15 +956,8 @@ export default function Studio() {
             <span className="eyebrow">{settings?.model || meta.word.toLowerCase()}</span>
             <div className="roll-actions">
               {priceEstimate ? (
-                <span
-                  className="price"
-                  title={`${priceEstimate.label} (${priceEstimate.note}) · ${resolution} · $${priceEstimate.rate}/s${
-                    priceEstimate.adaptive
-                      ? ` · smart length picks ${priceEstimate.seconds.min}–${priceEstimate.seconds.max}s`
-                      : ` · ${priceEstimate.seconds.min}s`
-                  }`}
-                >
-                  <b>{formatUsdRange(priceEstimate)}</b>
+                <span className="price" title={priceTitle}>
+                  <b>{formatPriceRange(priceEstimate)}</b>
                   <small>
                     {priceEstimate.adaptive ? `auto · ${resolution}` : `${duration}s · ${resolution}`}
                   </small>
